@@ -30,7 +30,7 @@ export class HybridLogicalClock {
 
   constructor(config: HLCConfig) {
     this.nodeId = config.nodeId;
-    this.maxFutureSkewMs = config.maxFutureSkewMs ?? DEFAULT_MAX_FUTURE_SKEW_MS;
+    this.maxFutureSkewMs = normalizeMaxFutureSkewMs(config.maxFutureSkewMs);
     this.now = config.now ?? Date.now;
     this.metrics = config.metrics;
     this.physical = 0;
@@ -52,9 +52,11 @@ export class HybridLogicalClock {
 
   update(received: HLCTimestamp): HLCUpdateResult {
     const wall = this.now();
+    const skewDeltaMs = received.physical - wall;
 
-    if (received.physical > wall + this.maxFutureSkewMs) {
+    if (skewDeltaMs > this.maxFutureSkewMs) {
       this.metrics?.increment("statefabric.clock_skew_reject_total");
+      this.metrics?.observe("statefabric.clock_skew_reject_delta_ms", skewDeltaMs);
       return {
         timestamp: this.tick(),
         skewRejected: true
@@ -98,4 +100,11 @@ export class HybridLogicalClock {
     }
     return a.nodeId.localeCompare(b.nodeId);
   }
+}
+
+function normalizeMaxFutureSkewMs(value?: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_MAX_FUTURE_SKEW_MS;
+  }
+  return Math.max(0, Math.floor(value));
 }

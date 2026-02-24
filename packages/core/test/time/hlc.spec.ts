@@ -45,6 +45,49 @@ describe("HybridLogicalClock", () => {
     expect(result.skewRejected).toBe(true);
     expect(result.timestamp.physical).toBe(wall);
     expect(metrics.counter("statefabric.clock_skew_reject_total")).toBe(1);
+    expect(metrics.observed("statefabric.clock_skew_reject_delta_ms")).toEqual([10_000]);
+  });
+
+  it("accepts a received timestamp exactly at configured skew boundary", () => {
+    let wall = 10_000;
+    const clock = new HybridLogicalClock({
+      nodeId: "node-a",
+      now: () => wall,
+      maxFutureSkewMs: 100
+    });
+
+    clock.tick();
+
+    const atBoundary: HLCTimestamp = {
+      physical: 10_100,
+      logical: 2,
+      nodeId: "node-b"
+    };
+
+    const result = clock.update(atBoundary);
+
+    expect(result.skewRejected).toBe(false);
+    expect(result.timestamp.physical).toBe(10_100);
+    expect(result.timestamp.logical).toBe(3);
+  });
+
+  it("normalizes invalid negative skew configuration to zero", () => {
+    let wall = 10_000;
+    const clock = new HybridLogicalClock({
+      nodeId: "node-a",
+      now: () => wall,
+      maxFutureSkewMs: -1
+    });
+
+    clock.tick();
+    const result = clock.update({
+      physical: 10_001,
+      logical: 0,
+      nodeId: "node-b"
+    });
+
+    expect(result.skewRejected).toBe(true);
+    expect(result.timestamp.physical).toBe(10_000);
   });
 
   it("accepts valid received timestamp and moves clock safely", () => {
