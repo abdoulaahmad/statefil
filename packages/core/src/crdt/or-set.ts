@@ -1,22 +1,31 @@
 import type { Mergeable } from "./types";
 
+export type ORSetLiveTagWatermark = Record<string, number>;
+
 export class ORSet<T> implements Mergeable<ORSet<T>> {
   private readonly elements: Map<T, Set<string>>;
   private readonly tombstones: Map<T, Set<string>>;
+  private readonly actorId: string;
   private nextTagId: number;
 
   constructor(
     elements?: Map<T, Set<string>>,
     tombstones?: Map<T, Set<string>>,
-    nextTagId = 0
+    nextTagId = 0,
+    actorId = "actor-0"
   ) {
     this.elements = elements ? cloneSetMap(elements) : new Map();
     this.tombstones = tombstones ? cloneSetMap(tombstones) : new Map();
     this.nextTagId = nextTagId;
+    this.actorId = actorId;
   }
 
   add(element: T, tag?: string): void {
     const resolvedTag = tag ?? this.makeTag();
+    const parsedTag = parseOrTag(resolvedTag);
+    if (parsedTag && parsedTag.actorId === this.actorId) {
+      this.nextTagId = Math.max(this.nextTagId, parsedTag.sequence);
+    }
     if (!this.elements.has(element)) {
       this.elements.set(element, new Set());
     }
@@ -61,8 +70,58 @@ export class ORSet<T> implements Mergeable<ORSet<T>> {
     return out;
   }
 
+  tombstoneCount(): number {
+    let count = 0;
+    for (const tags of this.tombstones.values()) {
+      count += tags.size;
+    }
+    return count;
+  }
+
+  // Compacts tombstones that are causally stable according to the supplied
+  // actor->sequence watermark. Tags not parseable as "<actor>:<sequence>"
+  // are retained for safety.
+  compactTombstones(liveTagWatermark: ORSetLiveTagWatermark): number {
+    let removed = 0;
+
+    for (const [element, tombstones] of this.tombstones) {
+      const liveTags = this.elements.get(element);
+      for (const tag of [...tombstones]) {
+        if (liveTags?.has(tag)) {
+          continue;
+        }
+
+        const parsed = parseOrTag(tag);
+        if (!parsed) {
+          continue;
+        }
+
+        const watermark = liveTagWatermark[parsed.actorId];
+        if (typeof watermark !== "number" || !Number.isFinite(watermark)) {
+          continue;
+        }
+
+        if (parsed.sequence <= Math.floor(watermark)) {
+          tombstones.delete(tag);
+          removed += 1;
+        }
+      }
+
+      if (tombstones.size === 0) {
+        this.tombstones.delete(element);
+      }
+    }
+
+    return removed;
+  }
+
   merge(other: ORSet<T>): ORSet<T> {
-    const merged = new ORSet<T>();
+    const merged = new ORSet<T>(
+      undefined,
+      undefined,
+      Math.max(this.nextTagId, other.nextTagId),
+      this.actorId
+    );
 
     // Merge tombstones from both replicas first (prevents delete resurrection).
     mergeSetMapInPlace(merged.tombstones, this.tombstones);
@@ -78,14 +137,31 @@ export class ORSet<T> implements Mergeable<ORSet<T>> {
       }
     }
 
-    merged.nextTagId = Math.max(this.nextTagId, other.nextTagId);
     return merged;
   }
 
   private makeTag(): string {
     this.nextTagId += 1;
-    return `tag-${this.nextTagId}`;
+    return `${this.actorId}:${this.nextTagId}`;
   }
+}
+
+function parseOrTag(tag: string): { actorId: string; sequence: number } | null {
+  const parts = tag.split(":");
+  if (parts.length !== 2) {
+    return null;
+  }
+
+  const actorId = parts[0];
+  const sequence = Number(parts[1]);
+  if (!actorId || !Number.isFinite(sequence) || sequence < 0) {
+    return null;
+  }
+
+  return {
+    actorId,
+    sequence: Math.floor(sequence)
+  };
 }
 
 function cloneSetMap<T>(source: Map<T, Set<string>>): Map<T, Set<string>> {

@@ -53,6 +53,7 @@ export interface DurableEventualRuntimeOptions {
   snapshotEveryOps?: number;
   snapshotEveryMs?: number;
   retainPreCheckpointSegments?: number;
+  orSetCompactTombstones?: () => number;
   onConflictEvent?: ConflictEventListener;
   metrics?: MetricsCollector;
 }
@@ -96,6 +97,7 @@ export class DurableEventualRuntime {
   private readonly snapshotEveryOps: number;
   private readonly snapshotEveryMs: number;
   private readonly retainPreCheckpointSegments: number;
+  private readonly orSetCompactTombstones?: () => number;
   private readonly clock: HybridLogicalClock;
 
   private readonly registers = new Map<string, unknown>();
@@ -130,6 +132,7 @@ export class DurableEventualRuntime {
       0,
       options.retainPreCheckpointSegments ?? DEFAULT_RETAIN_PRECHECKPOINT_SEGMENTS
     );
+    this.orSetCompactTombstones = options.orSetCompactTombstones;
     this.lastSnapshotAtMs = this.now();
     this.metrics = options.metrics;
     this.clock = new HybridLogicalClock({
@@ -569,6 +572,20 @@ export class DurableEventualRuntime {
         counters: Object.fromEntries(this.counters.entries())
       }
     };
+
+    if (this.orSetCompactTombstones) {
+      try {
+        const compactedTombstones = this.orSetCompactTombstones();
+        if (compactedTombstones > 0) {
+          this.metrics?.increment(
+            "statefabric.orset_tombstones_compacted_total",
+            compactedTombstones
+          );
+        }
+      } catch {
+        this.metrics?.increment("statefabric.orset_tombstone_gc_failures_total");
+      }
+    }
 
     await this.store.saveLatestSnapshot(snapshot);
     await this.store.saveManifest(compacted);

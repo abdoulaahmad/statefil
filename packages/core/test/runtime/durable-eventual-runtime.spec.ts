@@ -304,6 +304,54 @@ describe("DurableEventualRuntime", () => {
     await runtimeB.close();
   });
 
+  it("runs OR-set tombstone compaction hook during snapshot compaction", async () => {
+    const store = new InMemoryRuntimeStore();
+    const metrics = new InMemoryMetricsCollector();
+    let compactionCalls = 0;
+
+    const runtime = new DurableEventualRuntime(store, {
+      nodeId: "node-a",
+      maxBatchSize: 1,
+      flushIntervalMs: 1_000,
+      snapshotEveryOps: 1,
+      snapshotEveryMs: 0,
+      orSetCompactTombstones: () => {
+        compactionCalls += 1;
+        return 3;
+      },
+      metrics
+    });
+
+    await runtime.setRegister("session", "user", "alice");
+    await runtime.close();
+
+    expect(compactionCalls).toBe(1);
+    expect(metrics.counter("statefabric.orset_tombstones_compacted_total")).toBe(3);
+  });
+
+  it("records OR-set tombstone compaction hook failures without failing snapshot", async () => {
+    const store = new InMemoryRuntimeStore();
+    const metrics = new InMemoryMetricsCollector();
+
+    const runtime = new DurableEventualRuntime(store, {
+      nodeId: "node-a",
+      maxBatchSize: 1,
+      flushIntervalMs: 1_000,
+      snapshotEveryOps: 1,
+      snapshotEveryMs: 0,
+      orSetCompactTombstones: () => {
+        throw new Error("compaction hook failed");
+      },
+      metrics
+    });
+
+    await runtime.setRegister("session", "user", "alice");
+    await runtime.close();
+
+    expect(metrics.counter("statefabric.orset_tombstone_gc_failures_total")).toBe(1);
+    expect(metrics.counter("statefabric.snapshot_compactions_total")).toBe(1);
+  });
+
   it("replays only post-checkpoint segments on top of snapshot state", async () => {
     const store = new InMemoryRuntimeStore();
     store.snapshot = {
