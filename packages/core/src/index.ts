@@ -6,4 +6,5 @@ export * from "./crdt";
 export * from "./log";
 export * from "./time";
 export * from "./runtime";
+export * from "./replication";
 export type * from "./types/runtime";
